@@ -196,7 +196,7 @@ export function timeoutPromise<T>(
 				clearTimeout(timeoutId);
 				resolve(res);
 			},
-			(err) => {
+			(err: Error) => {
 				clearTimeout(timeoutId);
 				reject(err);
 			},
@@ -277,7 +277,7 @@ export function createAlbumURL(
  */
 export function createTrackURL(
 	artist: string | null | undefined,
-	track?: string | null | undefined,
+	track?: string | null,
 ): string {
 	if (!track || !artist) {
 		return '';
