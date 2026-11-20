@@ -14,12 +14,12 @@ const SEPARATORS: Separator[] = [' - ', ' | '];
 /**
  * This filter is applied after all page properties are initialized.
  */
-let bandcampFilter = MetadataFilter.createFilter(
-	MetadataFilter.createFilterSetForFields(
-		['artist', 'track', 'album', 'albumArtist'],
-		MetadataFilter.removeZeroWidth,
-	),
-);
+let bandcampFilter = MetadataFilter.createFilter({
+	artist: MetadataFilter.removeZeroWidth,
+	track: MetadataFilter.removeZeroWidth,
+	album: [MetadataFilter.removeZeroWidth, removePreOrderSuffix],
+	albumArtist: MetadataFilter.removeZeroWidth,
+});
 
 if (document.querySelector('main#p-tralbum-page') === null) {
 	setupDesktopConnector();
@@ -84,6 +84,9 @@ function setupDesktopConnector() {
 	} else if (isDiscoverPage()) {
 		Util.debugLog('Init props for discover player');
 		initPropertiesForDiscoverPlayer();
+	} else if (isPlaylistPage()) {
+		Util.debugLog('Init props for playlist player');
+		initPropertiesForPlaylistPlayer();
 	} else {
 		Util.debugLog('Init props for home page');
 
@@ -202,7 +205,7 @@ function initPropertiesForSongAndAlbumPlayer() {
 function initPropertiesForCollectionsPlayer() {
 	Connector.artistSelector = '.now-playing .artist span';
 
-	Connector.trackSelector = '.info-progress .title span:nth-child(2)';
+	Connector.trackSelector = '.info-progress .title span:last-child';
 
 	Connector.albumSelector = '.now-playing .title';
 
@@ -233,6 +236,44 @@ function initPropertiesForFeedPlayer() {
 	Connector.playButtonSelector = '#track_play_waypoint.playing';
 
 	Connector.getOriginUrl = () => Util.getOriginUrl('.playing .buy-now a');
+}
+
+// Example: https://bandcamp.com/%USERNAME%/playlist/%PLAYLISTNAME%
+// Selector approach for the new player informed by #5736 (@adam-blackwater).
+function initPropertiesForPlaylistPlayer() {
+	bandcampFilter = bandcampFilter.extend(
+		MetadataFilter.createFilter({
+			artist: [removeByPrefix],
+		}),
+	);
+
+	// Track metadata lives on the currently-playing list item; play state and
+	// the track id/duration live on the persistent floating player bar.
+	const playerContext = '.track-list-item.currently-playing ';
+	const trackMeta = '.floating-player .track-meta';
+
+	Connector.playerSelector = '.floating-player';
+
+	Connector.artistSelector = `${playerContext} .artist-name`;
+	Connector.trackSelector = `${playerContext} .title-text`;
+	Connector.albumSelector = `${playerContext} .album-title > strong`;
+	Connector.trackArtSelector = `${playerContext} .g-image`;
+
+	Connector.isPlaying = () =>
+		document
+			.querySelector('.floating-player .play-pause-button')
+			?.getAttribute('aria-label') === 'Pause';
+
+	// `.track-meta` carries the numeric track id and duration (in seconds).
+	Connector.getUniqueID = () =>
+		document.querySelector(trackMeta)?.getAttribute('id') ?? null;
+
+	Connector.getDuration = () => {
+		const duration = document
+			.querySelector(trackMeta)
+			?.getAttribute('duration');
+		return duration ? parseFloat(duration) : null;
+	};
 }
 
 // Example: https://bandcamp.com/?show=47
@@ -311,15 +352,17 @@ function isDiscoverPage() {
 	return url.pathname.startsWith('/discover');
 }
 
+function isPlaylistPage() {
+	return getPageType() === 'music.playlist';
+}
+
 function getTrackNodes() {
 	let trackNodes: NodeListOf<Element> =
 		document.querySelectorAll('thisshouldbeempty');
 	if (isAlbumPage()) {
 		trackNodes = document.querySelectorAll('.track_list .track-title');
 	} else if (isCollectionsPage()) {
-		trackNodes = document.querySelectorAll(
-			'.queue .title span:nth-child(2)',
-		);
+		trackNodes = document.querySelectorAll('.queue .title span:last-child');
 	}
 
 	return trackNodes;
@@ -332,15 +375,25 @@ function isArtistVarious(artist: string | null, track: string | null) {
 	 * Example: https://krefeld8ung.bandcamp.com/album/krefeld-8ung-vol-1
 	 */
 	if (trackNodes.length !== 0) {
-		const artists = [];
-		for (const trackNode of trackNodes) {
-			const trackName = trackNode.textContent;
-			if (!Util.findSeparator(trackName ?? '', SEPARATORS)) {
-				return false;
-			}
-			const { artist } = Util.splitArtistTrack(trackName, SEPARATORS);
-			artists.push(artist);
+		const artists = [...trackNodes]
+			.map((trackNode) => trackNode.textContent)
+			.filter((trackName) =>
+				Util.findSeparator(trackName ?? '', SEPARATORS),
+			)
+			.map(
+				(trackName) =>
+					Util.splitArtistTrack(trackName, SEPARATORS).artist,
+			);
+
+		/*
+		 * We allow one single track without a separator, as sometimes mixed versions
+		 * of a compilation are present that are formatted differently.
+		 * Example: https://leonvynehall.bandcamp.com/album/fabric-presents-leon-vynehall
+		 */
+		if (trackNodes.length - artists.length > 1) {
+			return false;
 		}
+
 		/*
 		 * Return false if every detected artist on the album has a very short name.
 		 * It is probably not artist names but disc sides or some kind of numbers.
@@ -416,4 +469,8 @@ function removeByPrefix(text: string) {
 
 function removeFromPrefix(text: string) {
 	return text.replace('from ', '');
+}
+
+function removePreOrderSuffix(text: string) {
+	return text.replace(/ ?pre-order/i, '');
 }

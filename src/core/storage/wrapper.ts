@@ -28,8 +28,8 @@ import type { CloneableSong } from '@/core/object/song';
 import EventEmitter from '@/util/emitter';
 import type connectors from '@/core/connectors';
 import type { RegexEdit } from '@/util/regex';
-import { debugLog } from '../content/util';
 import { ServiceCallResult } from '../object/service-call-result';
+import { debugLog } from '../util/debug';
 
 export interface CustomPatterns {
 	[connectorId: string]: string[];
@@ -195,9 +195,7 @@ const LOCKING_TIMEOUT = 3000;
  */
 export default class StorageWrapper<K extends keyof DataModels> {
 	// V extends DataModels[K], T extends Record<K, V>
-	private storage:
-		| browser.Storage.StorageAreaWithUsage
-		| browser.Storage.StorageArea;
+	private storage: browser.Storage.StorageArea;
 	private namespace: StorageNamespace;
 	private requests: number[] = [];
 	private autoIncrement = 0;
@@ -215,9 +213,7 @@ export default class StorageWrapper<K extends keyof DataModels> {
 	 * @param namespace - Storage namespace
 	 */
 	constructor(
-		storage:
-			| browser.Storage.StorageAreaWithUsage
-			| browser.Storage.StorageArea,
+		storage: browser.Storage.StorageArea,
 		namespace: StorageNamespace,
 	) {
 		this.storage = storage;
@@ -242,9 +238,13 @@ export default class StorageWrapper<K extends keyof DataModels> {
 		// #v-ifdef VITE_DEV
 		console.log('StorageWrapper#get: ', this.namespace);
 		// #v-endif
-		const data = await this.storage.get();
-		if (data && this.namespace in data) {
-			return data[this.namespace] as DataModels[K];
+		try {
+			const data = await this.storage.get(this.namespace);
+			if (this.namespace in data) {
+				return data[this.namespace] as DataModels[K];
+			}
+		} catch (e) {
+			debugLog(`StorageWrapper#get(${this.namespace}); ${e}`);
 		}
 
 		return null;
@@ -285,7 +285,11 @@ export default class StorageWrapper<K extends keyof DataModels> {
 			[this.namespace]: data,
 		};
 
-		await this.storage.set(dataToSave);
+		try {
+			await this.storage.set(dataToSave);
+		} catch (e) {
+			debugLog(`StorageWrapper#set(${this.namespace}); ${e}`);
+		}
 	}
 
 	/**
@@ -343,6 +347,10 @@ export default class StorageWrapper<K extends keyof DataModels> {
 	 * Clear storage.
 	 */
 	async clear(): Promise<void> {
-		await this.storage.remove(this.namespace);
+		try {
+			await this.storage.remove(this.namespace);
+		} catch (e) {
+			debugLog(`StorageWrapper#remove(${this.namespace}); ${e}`);
+		}
 	}
 }

@@ -3,26 +3,22 @@
 import type {
 	ArtistTrackInfo,
 	BaseState,
-	State,
 	TimeInfo,
 	TrackInfoWithAlbum,
 } from '@/core/types';
 import type { ConnectorOptions } from '@/core/storage/options';
 import type { ControllerModeStr } from '@/core/object/controller/controller';
-import type { DebugLogType } from '@/util/util';
 
 import { t } from '@/util/i18n';
 import * as ControllerMode from '@/core/object/controller/controller-mode';
 import type Song from '../object/song';
 import { sendContentMessage } from '@/util/communication';
+import { debugLog } from '@/core/util/debug';
 
-const BrowserStorage = (async () => {
-	return import('@/core/storage/browser-storage');
-})();
+import * as BrowserStorage from '@/core/storage/browser-storage';
 
-const Options = (async () => {
-	return import('@/core/storage/options');
-})();
+// Re-export for backward compatibility
+export { debugLog };
 
 /**
  * All the separators used by the core and by connectors.
@@ -70,15 +66,18 @@ export const defaultSeparators = [
 	' \u2013 ',
 	' \u2014 ',
 	' // ',
-	'\u002d',
-	'\u2013',
-	'\u2014',
+	' \u002d',
+	' \u2013',
+	' \u2014',
+	'\u002d ',
+	'\u2013 ',
+	'\u2014 ',
 	':',
 	'|',
 	'///',
 	'/',
 	'~',
-];
+] as const;
 
 /**
  * Convert given time-string into seconds.
@@ -145,6 +144,15 @@ export function joinArtists(artists: Node[]): string | null {
 			return artist.textContent;
 		})
 		.join(ARTIST_SEPARATOR);
+}
+
+/**
+ * Join array of strings into a single string.
+ * @param artists - Array of strings
+ * @returns String joined by separator
+ */
+export function joinArtistStrings(artists: string[]): string {
+	return artists.join(ARTIST_SEPARATOR);
 }
 
 /**
@@ -338,18 +346,20 @@ export function isArtistTrackEmpty(
  * @param source - Source object
  * @param fields - List of fields to fill
  */
-export function fillEmptyFields(
-	target: State,
-	source: State | null | undefined,
-	fields: (keyof State)[] | undefined,
-): State {
-	if (!source || !Array.isArray(fields)) {
+export function fillEmptyFields<
+	T extends object,
+	Fields extends readonly (keyof T)[],
+>(
+	target: Partial<T>,
+	source: Partial<Pick<T, Fields[number]>> | null | undefined,
+	fields: Fields,
+): typeof target {
+	if (!source) {
 		return target;
 	}
 
 	for (const field of fields) {
 		if (!target[field] && source[field]) {
-			// @ts-expect-error - TS is a little confused here too
 			target[field] = source[field];
 		}
 	}
@@ -508,7 +518,7 @@ export function extractImageUrlFromSelectors(
 		return null;
 	}
 	const elements = queryElements(selectors);
-	if (!elements || !elements.length) {
+	if (!elements) {
 		return null;
 	}
 
@@ -631,11 +641,16 @@ export function isElementVisible(
 export function getValueFromSelectors(
 	selectors: string | string[],
 ): string | null {
-	const element = queryElements(selectors);
-	if (!element || !('value' in element)) {
+	const elements = queryElements<HTMLInputElement>(selectors);
+	if (!elements) {
 		return null;
 	}
-	return element.value as string;
+	for (const element of elements) {
+		if (typeof element.value === 'string') {
+			return element.value;
+		}
+	}
+	return null;
 }
 
 /**
@@ -657,18 +672,20 @@ export function getDataFromSelectors(
  * element with the selector. If `selectors` is an array, return
  * element matched by first valid selector.
  * @param selectors - Single selector or array of selectors
- * @returns HTML element
+ * @returns HTML element or null if not found (or no selectors passed)
  */
-/* istanbul ignore next */
-export function queryElements(
+export function queryElements<ElementT extends Element = HTMLElement>(
 	selectors: string | string[] | null | undefined,
-): NodeListOf<HTMLElement> | null {
+): typeof selectors extends null | undefined
+	? null
+	: (NodeListOf<ElementT> & { 0: ElementT }) | null {
 	if (!selectors) {
 		return null;
 	}
 
 	if (typeof selectors === 'string') {
-		return document.querySelectorAll(selectors);
+		const singleResult = document.querySelectorAll<ElementT>(selectors);
+		return nodeListIsNonEmpty(singleResult) ? singleResult : null;
 	}
 
 	if (!Array.isArray(selectors)) {
@@ -676,15 +693,19 @@ export function queryElements(
 	}
 
 	for (const selector of selectors) {
-		const elements = document.querySelectorAll(
-			selector,
-		) as NodeListOf<HTMLElement>;
-		if (elements.length > 0) {
+		const elements = document.querySelectorAll<ElementT>(selector);
+		if (nodeListIsNonEmpty(elements)) {
 			return elements;
 		}
 	}
 
 	return null;
+
+	function nodeListIsNonEmpty<TNode extends Node>(
+		nodeList: NodeListOf<TNode>,
+	): nodeList is NodeListOf<TNode> & { 0: TNode } {
+		return nodeList.length > 0;
+	}
 }
 
 /**
@@ -698,10 +719,9 @@ export async function getOption(
 	connector: string,
 	key: string,
 ): Promise<boolean> {
-	const awaitedStorage = await BrowserStorage;
-	const data = await awaitedStorage
-		.getStorage(awaitedStorage.CONNECTORS_OPTIONS)
-		.get();
+	const data = await BrowserStorage.getStorage(
+		BrowserStorage.CONNECTORS_OPTIONS,
+	).get();
 	if (
 		data &&
 		connector in data &&
@@ -751,70 +771,6 @@ export function injectScriptIntoDocument(scriptUrl: string): void {
 		e.parentNode?.removeChild(e);
 	};
 	(document.head || document.documentElement).appendChild(script);
-}
-
-/**
- * Handle async checks for DEBUG_LOGGING_ENABLED option while ensuring
- * that logs are still printed in a predictable order.
- */
-class DebugLogQueue {
-	private queue: { text: unknown; logType: DebugLogType }[] = [];
-	private isActive = false;
-	private shouldPrint = Options.then((awaitedOptions) =>
-		awaitedOptions.getOption(awaitedOptions.DEBUG_LOGGING_ENABLED),
-	);
-
-	/**
-	 * Enqueue a log message to be printed.
-	 * @param text - Debug message
-	 * @param logType - Log type
-	 */
-	public push(text: unknown, logType: DebugLogType): void {
-		this.queue.push({ text, logType });
-		this.start();
-	}
-
-	/**
-	 * Process the queue to print logs in order.
-	 */
-	private async start(): Promise<void> {
-		if (this.isActive) {
-			return;
-		}
-		this.isActive = true;
-
-		try {
-			for (let i = 0; i < 100 && this.queue.length > 0; i++) {
-				const currentMessage = this.queue.shift();
-				if (currentMessage && (await this.shouldPrint)) {
-					const logFunc = console[currentMessage.logType];
-
-					if (typeof logFunc !== 'function') {
-						throw new TypeError(
-							`Unknown log type: ${currentMessage.logType}`,
-						);
-					}
-
-					const message = `Web Scrobbler: ${currentMessage.text?.toString()}`;
-					logFunc(message);
-				}
-			}
-			this.isActive = false;
-		} catch {
-			this.isActive = false;
-		}
-	}
-}
-const debugLogQueue = new DebugLogQueue();
-
-/**
- * Print debug message with prefixed "Web Scrobbler" string.
- * @param text - Debug message
- * @param logType - Log type
- */
-/* istanbul ignore next */
-export function debugLog(text: unknown, logType: DebugLogType = 'log'): void {
-	debugLogQueue.push(text, logType);
 }
 
 /** YouTube section. */
@@ -927,9 +883,9 @@ export function isYtVideoDescriptionValid(desc: string | null): desc is string {
 	);
 }
 
-export function parseYtVideoDescription(
+export function parseYtTopicVideoDescription(
 	desc: string | null,
-): TrackInfoWithAlbum | null {
+): typeof desc extends null ? null : TrackInfoWithAlbum | null {
 	if (!isYtVideoDescriptionValid(desc)) {
 		return null;
 	}

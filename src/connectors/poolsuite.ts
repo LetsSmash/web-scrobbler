@@ -1,11 +1,21 @@
 export {};
 
-Connector.playButtonSelector = '.middle.paused';
-Connector.playerSelector = '.inner-size';
-Connector.trackSelector = '.current-track h3';
-Connector.artistSelector = '.current-track h2';
-Connector.currentTimeSelector = '.timer span:nth-child(1)';
-Connector.durationSelector = '.timer span:nth-child(2)';
+Connector.playerSelector = 'body';
+Connector.useTabAudibleApi();
 
-Connector.scrobblingDisallowedReason = () =>
-	Connector.getTrack() === 'Loading...' ? 'IsLoading' : null;
+Connector.getArtistTrack = () => {
+	const title = navigator.mediaSession.metadata?.title ?? '';
+	const artist = navigator.mediaSession.metadata?.artist ?? '';
+
+	if (title === 'Poolsuite ON AIR') {
+		const text =
+			document.querySelector('h2.font-everyday')?.textContent ?? '';
+		return Util.processSoundCloudTrack(text);
+	}
+
+	const result = Util.processSoundCloudTrack(title);
+	if (result.artist && result.track) {
+		return result;
+	}
+	return { artist, track: title };
+};
